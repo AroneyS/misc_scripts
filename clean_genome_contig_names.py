@@ -8,7 +8,7 @@
 
 import sys
 from Bio import SeqIO
-from BCBio import GFF
+import gffutils
 
 genome = sys.argv[1]
 input = sys.argv[2]
@@ -19,15 +19,17 @@ print(f"Cleaning genome {genome} contig names")
 if input.endswith(".gff"):
     print(f"Cleaning GFF file")
     with open(output, "w") as output_file:
-        with open(input) as input_file:
-            for record in GFF.parse(input_file, target_lines=1):
-                clean_record = genome + "_" + record.id.replace(genome + "_", "").replace("_", "-")
-                print(f"Record {record.id} cleaned up to form {clean_record}")
+        db = gffutils.create_db(input, dbfn=output+".db", force=True, keep_order=True)
+        output_file.write(f"## {db.directives[0]}\n")
+        for record in db.all_features():
+            clean_record = genome + "_" + record.id.replace(genome + "_", "").replace("_", "-")
+            clean_contig = genome + "_" + record.seqid.replace(genome + "_", "").replace("_", "-")
+            print(f"Record {record.id} from contig {record.seqid}, cleaned up to form {clean_record} from {clean_contig}")
 
-                record.id = clean_record
-                GFF.write([record], output_file)
-                import pdb
-                pdb.set_trace()
+            record.id = clean_record
+            record.attributes["ID"] = clean_record
+            record.seqid = clean_contig
+            output_file.write(str(record) + "\n")
 
 else:
     print(f"Cleaning fasta file")
