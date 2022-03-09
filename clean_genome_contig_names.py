@@ -28,6 +28,7 @@ if input.endswith(".gff"):
 
             record.id = clean_record
             record.attributes["ID"] = clean_record
+            record.attributes["locus_tag"] = clean_record
             record.seqid = clean_contig
             output_file.write(str(record) + "\n")
 
