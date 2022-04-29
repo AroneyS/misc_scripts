@@ -22,7 +22,10 @@ with open(needles_path) as needles_file:
             if needle.seq == haystack.seq:
                 matches.append((needle.id, haystack.id))
 
-with open(output_path, "w") as output_file:
-    output_file.write("needle_id" + delim + "haystack_id" + "\n")
-    for match in matches:
-        output_file.write(match[0] + delim + match[1] + "\n")
+if len(matches) > 0:
+    with open(output_path, "w") as output_file:
+        output_file.write("needle_id" + delim + "haystack_id" + "\n")
+        for match in matches:
+            output_file.write(match[0] + delim + match[1] + "\n")
+
+print(f"Completed search for {needles_path} in {haystacks_path}")
