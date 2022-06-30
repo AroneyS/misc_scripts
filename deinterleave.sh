@@ -1,5 +1,6 @@
 #!/bin/bash
 
+PARALLEL_FILES=5
 PIGZ_COMPRESSION_THREADS=5
 
 while getopts 'i:o:' flag; do
@@ -13,7 +14,7 @@ done
 
 mkdir -p $OUTPUT_DIR
 
-cat $INPUT_FILE_LIST | parallel --plus \
+cat $INPUT_FILE_LIST | parallel -j $PARALLEL_FILES --plus \
     gunzip -c {} '|' \
     paste - - - - - - - - \
     '|' tee '>('cut -f 1-4 '|' tr '"\t"' '"\n"' '|' pigz --best --processes ${PIGZ_COMPRESSION_THREADS} '>' $OUTPUT_DIR/{/..}.1.fq.gz')' \
