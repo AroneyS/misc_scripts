@@ -18,5 +18,5 @@ cat $INPUT_FILE_LIST | parallel -j $PARALLEL_FILES --plus \
     gunzip -c {} '|' \
     paste - - - - - - - - \
     '|' tee '>('cut -f 1-4 '|' tr '"\t"' '"\n"' '|' pigz --best --processes ${PIGZ_COMPRESSION_THREADS} '>' $OUTPUT_DIR/{/..}.1.fq.gz')' \
-    '|' cut -f 5-8 '|' tr '"\t"' '"\n"' '|' pigz --best --processes ${PIGZ_COMPRESSION_THREADS} '>' $OUTPUT_DIR/{/..}.2.fq.gz > test.txt
+    '|' cut -f 5-8 '|' tr '"\t"' '"\n"' '|' pigz --best --processes ${PIGZ_COMPRESSION_THREADS} '>' $OUTPUT_DIR/{/..}.2.fq.gz
 
