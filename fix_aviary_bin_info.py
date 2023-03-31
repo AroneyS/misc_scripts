@@ -18,8 +18,8 @@ def main(arguments):
 
     parser.add_argument("--checkm1", type=argparse.FileType("r"), help="CheckM1 results file")
     parser.add_argument("--checkm2", type=argparse.FileType("r"), help="CheckM2 results file", required=True)
-    parser.add_argument("--bac-summary", type=argparse.FileType("r"), help="GTDBtk bacteria file", required=True)
-    parser.add_argument("--ar-summary", type=argparse.FileType("r"), help="GTDBtk archaea file", required=True)
+    parser.add_argument("--bac-summary", help="GTDBtk bacteria file", required=True)
+    parser.add_argument("--ar-summary", help="GTDBtk archaea file", required=True)
     parser.add_argument("--output", type=argparse.FileType("w"), help="Output bin_stats file", required=True)
     parser.add_argument("--output-minimal", type=argparse.FileType("w"), help="Output checkm_minimal file")
 
@@ -34,9 +34,18 @@ def main(arguments):
         loglevel = logging.INFO
     logging.basicConfig(level=loglevel, format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y/%m/%d %I:%M:%S %p')
 
-    bac_summary = pd.read_csv(args.bac_summary, sep="\t")
-    ar_summary = pd.read_csv(args.ar_summary, sep="\t")
-    taxa = pd.concat([bac_summary, ar_summary])
+    taxa_list = []
+    try:
+        bac_summary = pd.read_csv(args.bac_summary, sep="\t")
+        taxa_list.append(bac_summary)
+    except FileNotFoundError:
+        pass
+    try:
+        ar_summary = pd.read_csv(args.ar_summary, sep="\t")
+        taxa_list.append(ar_summary)
+    except FileNotFoundError:
+        pass
+    taxa = pd.concat(taxa_list)
     taxa.rename({"user_genome" : "Bin Id"}, inplace=True, axis=1)
 
     checkm2 = pd.read_csv(args.checkm2, sep="\t")
