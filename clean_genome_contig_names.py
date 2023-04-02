@@ -2,8 +2,8 @@
 ### clean_genome_contig_names.py ###
 ####################################
 # Author: Samuel Aroney
-# Remove underscores from genome and contig names
-# Underscore separate genome and contig names
+# Remove tilde from genome and contig names
+# Tilde separate genome and contig names
 # python clean_genome_contig_names.py [GENOME_NAME] [INPUT] [OUTPUT]
 
 import sys
@@ -22,8 +22,8 @@ if input.endswith(".gff"):
         db = gffutils.create_db(input, dbfn=output+".db", force=True, keep_order=True)
         output_file.write(f"## {db.directives[0]}\n")
         for record in db.all_features():
-            clean_record = genome + "_" + record.id.replace(genome + "_", "").replace("_", "-")
-            clean_contig = genome + "_" + record.seqid.replace(genome + "_", "").replace("_", "-")
+            clean_record = genome + "~" + record.id.replace(genome + "~", "").replace("~", "-")
+            clean_contig = genome + "~" + record.seqid.replace(genome + "~", "").replace("~", "-")
             print(f"Record {record.id} from contig {record.seqid}, cleaned up to form {clean_record} from {clean_contig}")
 
             record.id = clean_record
@@ -37,8 +37,8 @@ else:
     with open(output, "w") as output_file:
         with open(input) as input_file:
             for record in SeqIO.parse(input_file, 'fasta'):
-                clean_record = genome + "_" + record.id.replace(genome + "_", "").replace("_", "-")
-                print(f"Record {record.id} cleaned up to form {clean_record}")
+                clean_record = genome + "~" + record.id.replace(genome + "~", "").replace("~", "-")
+                #print(f"Record {record.id} cleaned up to form {clean_record}")
 
                 record.id = clean_record
                 record.description = clean_record
