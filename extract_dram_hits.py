@@ -34,6 +34,7 @@ def main(arguments):
         loglevel = logging.INFO
     logging.basicConfig(level=loglevel, format='%(asctime)s %(levelname)s: %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
 
+    logging.info("Reading input fasta file")
     sequences = SeqIO.to_dict(SeqIO.parse(args.input, "fasta"))
 
     def extract_sequence(contig, begin, end, strand, sequences=sequences):
@@ -43,6 +44,7 @@ def main(arguments):
 
         return str(sequence)
 
+    logging.info("Processing DRAM file")
     output = (
         pl.read_csv(args.dram, separator="\t")
         .rename({"": "name"})
@@ -53,10 +55,13 @@ def main(arguments):
             )
     )
 
+    logging.info("Writing output fasta file")
     with open(args.output, "w") as f:
         for name, seq in output.iter_rows():
             f.write(">%s\n" % name)
             f.write("%s\n" % seq)
+
+    logging.info("Done")
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
