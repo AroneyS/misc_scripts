@@ -48,10 +48,13 @@ def main(arguments):
     output = (
         pl.read_csv(args.dram, separator="\t")
         .rename({"": "name"})
+        .with_columns(
+            contig = pl.concat_str(["fasta", "scaffold"], separator="_"),
+        )
         .select(
             "name",
-            info = pl.struct(["scaffold", "start_position", "end_position", "strandedness"])
-                .apply(lambda x: extract_sequence(x["scaffold"], x["start_position"], x["end_position"], x["strandedness"]))
+            info = pl.struct(["contig", "start_position", "end_position", "strandedness"])
+                .apply(lambda x: extract_sequence(x["contig"], x["start_position"], x["end_position"], x["strandedness"]))
             )
     )
 
