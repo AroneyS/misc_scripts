@@ -4,7 +4,9 @@
 Author: Samuel Aroney
 Extract DRAM-matched sequences from fasta file by name and coordinates
 
-Test: python extract_dram_hits.py --input test/test_contigs.fa --dram test/test_dram.tsv --output test/test_extract_output.fa
+Test:
+python extract_dram_hits.py --input test/test_contigs.fa --dram test/test_dram.tsv --output test/test_extract_output.fna
+python extract_dram_hits.py --input test/test_contigs.fa --dram test/test_dram.tsv --output test/test_extract_output.faa --translate
 """
 
 import sys
@@ -22,6 +24,7 @@ def main(arguments):
     parser.add_argument("--input", help="Input fasta file", required=True)
     parser.add_argument("--dram", help="Input DRAM tsv file", required=True)
     parser.add_argument("--output", help="Output fasta file", required=True)
+    parser.add_argument("--translate", help="Translate sequences to protein", action="store_true")
 
     args = parser.parse_args(arguments)
 
@@ -37,10 +40,13 @@ def main(arguments):
     logging.info("Reading input fasta file")
     sequences = SeqIO.to_dict(SeqIO.parse(args.input, "fasta"))
 
-    def extract_sequence(contig, begin, end, strand, sequences=sequences):
+    def extract_sequence(contig, begin, end, strand, sequences=sequences, translate=args.translate):
         sequence = sequences[contig].seq[begin - 1:end]
         if strand == -1:
             sequence = sequence.reverse_complement()
+
+        if translate:
+            sequence = sequence.translate()
 
         return str(sequence)
 
