@@ -23,7 +23,7 @@ def copy_file(source, dest):
     return True
 
 def pipeline(aviary_dir, output_dir, prefix, min_completeness, max_contamination):
-    bins = pl.read_csv(f"{aviary_dir}/bins/bin_info.tsv", sep = "\t"
+    bins = pl.read_csv(f"{aviary_dir}/bins/bin_info.tsv", separator = "\t"
         ).select(
             pl.col("Bin Id").alias("bin_id"),
             pl.col("Completeness (CheckM2)").alias("completeness"),
@@ -70,7 +70,7 @@ def main(arguments):
     output = pipeline(args.aviary_recover, args.output, args.prefix, args.min_completeness, args.max_contamination)
     metadata_path = os.path.join(args.output, args.prefix + "_metadata.tsv")
     logging.info(f"Writing metadata to {metadata_path}")
-    output.write_csv(metadata_path, sep = "\t")
+    output.write_csv(metadata_path, separator = "\t")
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
