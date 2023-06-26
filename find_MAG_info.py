@@ -22,5 +22,5 @@ with open(input) as input_file:
         if len(record.seq) >= 3000:
             n_contigs_3kb += 1
 
-mag_name = os.path.basename(input).split(".")[0]
+mag_name = os.path.splitext(os.path.basename(input))[0]
 print(f"{mag_name}\t{size}\t{n_contigs}\t{n_contigs_3kb}")
