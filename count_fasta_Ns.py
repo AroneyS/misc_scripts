@@ -12,4 +12,4 @@ input = sys.argv[1]
 
 with open(input) as input_file:
     for record in SeqIO.parse(input_file, 'fasta'):
-        print(record.id + "\t" + str(record.seq.count('N')))
+        print(record.id + "\t" + str(record.seq.count('N')) + "\t" + str(len(record.seq)))
