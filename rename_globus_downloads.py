@@ -47,9 +47,9 @@ def main(arguments):
         pl.DataFrame({
             "filepath": [os.path.join(dp, f) for dp, dn, filenames in os.walk(args.input_dir) for f in filenames if f in conversion["filename"].to_list()]
             })
-        .with_columns(filename = pl.col("filepath").apply(lambda s: os.path.basename(s)))
+        .with_columns(filename = pl.col("filepath").map_elements(lambda s: os.path.basename(s)))
         .join(conversion, on="filename")
-        .with_columns(new_filepath = pl.col("SampleID__").apply(lambda s: os.path.join(args.output_dir, s + ".fq.gz")))
+        .with_columns(new_filepath = pl.col("SampleID__").map_elements(lambda s: os.path.join(args.output_dir, s + ".fq.gz")))
         .select("filepath", "new_filepath")
     )
     logging.info(f"Found {samples.height} samples in {args.input_dir}")
