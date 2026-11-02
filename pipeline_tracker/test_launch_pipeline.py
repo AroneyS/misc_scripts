@@ -44,6 +44,11 @@ class Tests(unittest.TestCase):
     def test_progress_from_log_none(self):
         self.assertIsNone(progress_from_log("nothing here\n"))
 
+    def test_progress_from_log_fractional_percent(self):
+        # snakemake prints fractional percentages once step counts are large
+        text = "Finished jobid: 6531 (Rule: genome_prodigal)\n6 of 6531 steps (0.1%) done\n"
+        self.assertEqual(progress_from_log(text), "0.1% (6/6531)")
+
     def test_pid_alive(self):
         self.assertTrue(pid_alive(1))
         self.assertFalse(pid_alive(NONEXISTENT_PID))

@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 JOBID_RE = re.compile(r"external jobid '([^']+)'")
-PROGRESS_RE = re.compile(r"(\d+) of (\d+) steps \((\d+)%\) done")
+PROGRESS_RE = re.compile(r"(\d+) of (\d+) steps \(([\d.]+)%\) done")
 LEDGER_FIELDS = ["name", "host", "pid", "cwd", "command", "log_path", "exit_path", "launched_at", "action"]
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=accept-new"]
 # a run is only safe to relaunch/unlock/treat-as-not-running once we're sure it isn't still going;
