@@ -1,0 +1,7 @@
+# TSV manifest for launch_pipelines.py.
+# Columns: name (unique id), workdir (dir containing the Snakefile), profile (optional,
+# e.g. aqua), extra_args (optional, passed through as-is, e.g. --configfile x.yaml).
+# Blank lines and lines starting with # are ignored.
+name	workdir	profile	extra_args
+coverm_batch1	/work/microbiome/users/aroneys/src/some_project	aqua
+assembly_qc	/work/microbiome/users/aroneys/src/another_project	aqua	--configfile config/test.yaml
