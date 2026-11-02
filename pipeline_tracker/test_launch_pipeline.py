@@ -3,12 +3,17 @@
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import patch, Mock
+import launch_pipeline
 from launch_pipeline import (
     job_ids_from_log,
     pid_alive,
     read_exit_code,
-    derive_status,
+    run_state,
+    describe_state,
+    remote_pids_alive,
+    is_alive,
+    progress_from_log,
     build_unlock_command,
     latest_by_name,
     locked_ledger,
@@ -32,6 +37,13 @@ class Tests(unittest.TestCase):
     def test_job_ids_from_log_none(self):
         self.assertEqual(job_ids_from_log("nothing interesting here\n"), [])
 
+    def test_progress_from_log(self):
+        text = "3 of 10 steps (30%) done\nsome other line\n7 of 10 steps (70%) done\n"
+        self.assertEqual(progress_from_log(text), "70% (7/10)")
+
+    def test_progress_from_log_none(self):
+        self.assertIsNone(progress_from_log("nothing here\n"))
+
     def test_pid_alive(self):
         self.assertTrue(pid_alive(1))
         self.assertFalse(pid_alive(NONEXISTENT_PID))
@@ -47,11 +59,46 @@ class Tests(unittest.TestCase):
             exit_path.write_text("1\n")
             self.assertEqual(read_exit_code(exit_path), 1)
 
-    def test_derive_status(self):
-        self.assertEqual(derive_status(0, alive=False), "completed")
-        self.assertEqual(derive_status(1, alive=False), "failed (exit 1)")
-        self.assertEqual(derive_status(None, alive=True), "running")
-        self.assertEqual(derive_status(None, alive=False), "unknown (process gone, no exit code recorded)")
+    def test_run_state_and_describe_state(self):
+        self.assertEqual(run_state(0, alive=None), "completed")
+        self.assertEqual(run_state(1, alive=None), "failed")
+        self.assertEqual(run_state(None, alive=True), "running")
+        self.assertEqual(run_state(None, alive=False), "gone")
+        self.assertEqual(run_state(None, alive=None), "unreachable")
+
+        self.assertEqual(describe_state("completed"), "completed")
+        self.assertEqual(describe_state("failed", exit_code=1), "failed (exit 1)")
+        self.assertEqual(describe_state("running"), "running")
+        self.assertEqual(describe_state("gone"), "unknown (process gone, no exit code recorded)")
+        self.assertIn("could not reach host", describe_state("unreachable"))
+
+    def test_remote_pids_alive_parses_output(self):
+        mock_result = Mock(returncode=0, stdout="ALIVE:111\n")
+        with patch("launch_pipeline.subprocess.run", return_value=mock_result) as mock_run:
+            result = remote_pids_alive("otherhost", ["111", "222"])
+        self.assertEqual(result, {"111": True, "222": False})
+        ssh_cmd = mock_run.call_args[0][0]
+        self.assertEqual(ssh_cmd[0], "ssh")
+        self.assertIn("otherhost", ssh_cmd)
+
+    def test_remote_pids_alive_unreachable(self):
+        mock_result = Mock(returncode=255, stdout="")
+        with patch("launch_pipeline.subprocess.run", return_value=mock_result):
+            result = remote_pids_alive("otherhost", ["111"])
+        self.assertEqual(result, {"111": None})
+
+    def test_remote_pids_alive_empty(self):
+        self.assertEqual(remote_pids_alive("otherhost", []), {})
+
+    def test_is_alive_dispatches_local_vs_remote(self):
+        with patch("launch_pipeline.socket.gethostname", return_value="thishost"):
+            with patch("launch_pipeline.pid_alive", return_value=True) as mock_local:
+                self.assertTrue(is_alive("thishost", 123))
+                mock_local.assert_called_once_with(123)
+
+            with patch("launch_pipeline.remote_pids_alive", return_value={"123": False}) as mock_remote:
+                self.assertFalse(is_alive("otherhost", 123))
+                mock_remote.assert_called_once_with("otherhost", [123])
 
     def test_build_unlock_command_bare(self):
         command = ["snakemake", "-s", "foo.smk", "all", "--profile", "aqua"]
@@ -82,10 +129,12 @@ class Tests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "run.log"
             log_path.write_text("Submitted job 1 with external jobid '111'.\n")
-            record = {"exit_path": str(Path(tmp) / "run.exit"), "pid": NONEXISTENT_PID, "log_path": str(log_path)}
-            with patch("launch_pipeline.check_jobs_cleared", return_value=["111"]):
-                status, job_ids, still_present = restart_safety(record)
-        self.assertEqual(status, "unknown (process gone, no exit code recorded)")
+            record = {"host": "thishost", "exit_path": str(Path(tmp) / "run.exit"), "pid": NONEXISTENT_PID, "log_path": str(log_path)}
+            with patch("launch_pipeline.socket.gethostname", return_value="thishost"), \
+                 patch("launch_pipeline.check_jobs_cleared", return_value=["111"]):
+                state, exit_code, job_ids, still_present = restart_safety(record)
+        self.assertEqual(state, "gone")
+        self.assertIsNone(exit_code)
         self.assertEqual(job_ids, ["111"])
         self.assertEqual(still_present, ["111"])
 
@@ -95,12 +144,51 @@ class Tests(unittest.TestCase):
             log_path.write_text("Submitted job 1 with external jobid '111'.\n")
             exit_path = Path(tmp) / "run.exit"
             exit_path.write_text("1\n")
-            record = {"exit_path": str(exit_path), "pid": NONEXISTENT_PID, "log_path": str(log_path)}
+            record = {"host": "thishost", "exit_path": str(exit_path), "pid": NONEXISTENT_PID, "log_path": str(log_path)}
             with patch("launch_pipeline.check_jobs_cleared", return_value=[]):
-                status, job_ids, still_present = restart_safety(record)
-        self.assertEqual(status, "failed (exit 1)")
+                state, exit_code, job_ids, still_present = restart_safety(record)
+        self.assertEqual(state, "failed")
+        self.assertEqual(exit_code, 1)
         self.assertEqual(job_ids, ["111"])
         self.assertEqual(still_present, [])
+
+    def test_restart_safety_unreachable_host_is_not_safe(self):
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "run.log"
+            log_path.write_text("")
+            record = {"host": "otherhost", "exit_path": str(Path(tmp) / "run.exit"), "pid": "123", "log_path": str(log_path)}
+            with patch("launch_pipeline.socket.gethostname", return_value="thishost"), \
+                 patch("launch_pipeline.remote_pids_alive", return_value={"123": None}), \
+                 patch("launch_pipeline.check_jobs_cleared", return_value=[]):
+                state, exit_code, job_ids, still_present = restart_safety(record)
+        self.assertEqual(state, "unreachable")
+        self.assertNotIn(state, launch_pipeline.SAFE_TO_ACT_STATES)
+
+    def test_cmd_cancel_qdels_still_active_jobs(self):
+        with TemporaryDirectory() as tmp:
+            ledger_path = Path(tmp) / "ledger.tsv"
+            log_path = Path(tmp) / "run.log"
+            log_path.write_text("Submitted job 1 with external jobid '111'.\n")
+            record = {
+                "name": "run1", "host": "node1", "pid": str(NONEXISTENT_PID), "cwd": "/tmp",
+                "command": "snakemake --profile aqua", "log_path": str(log_path),
+                "exit_path": str(Path(tmp) / "run.exit"), "launched_at": "2026-01-01T00:00:00+00:00", "action": "launch",
+            }
+            with locked_ledger(ledger_path) as f:
+                write_record(f, record)
+
+            class Args:
+                name = "run1"
+                ledger = ledger_path
+
+            with patch("launch_pipeline.check_jobs_cleared", return_value=["111"]), \
+                 patch("launch_pipeline.is_alive", return_value=False), \
+                 patch("launch_pipeline.subprocess.run") as mock_run:
+                mock_run.return_value.returncode = 0
+                rc = launch_pipeline.cmd_cancel(Args())
+
+        mock_run.assert_called_once_with(["qdel", "111"], capture_output=True, text=True)
+        self.assertEqual(rc, 0)
 
     def test_ledger_round_trip_and_header_written_once(self):
         with TemporaryDirectory() as tmp:
