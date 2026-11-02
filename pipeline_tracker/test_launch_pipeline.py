@@ -3,6 +3,7 @@
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 from launch_pipeline import (
     job_ids_from_log,
     pid_alive,
@@ -13,6 +14,7 @@ from launch_pipeline import (
     locked_ledger,
     read_records,
     write_record,
+    restart_safety,
 )
 
 NONEXISTENT_PID = 999999999
@@ -75,6 +77,30 @@ class Tests(unittest.TestCase):
             {"name": "run1", "pid": "3"},
         ]
         self.assertEqual(latest_by_name(records), {"run1": {"name": "run1", "pid": "3"}, "run2": {"name": "run2", "pid": "2"}})
+
+    def test_restart_safety_still_queued(self):
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "run.log"
+            log_path.write_text("Submitted job 1 with external jobid '111'.\n")
+            record = {"exit_path": str(Path(tmp) / "run.exit"), "pid": NONEXISTENT_PID, "log_path": str(log_path)}
+            with patch("launch_pipeline.check_jobs_cleared", return_value=["111"]):
+                status, job_ids, still_present = restart_safety(record)
+        self.assertEqual(status, "unknown (process gone, no exit code recorded)")
+        self.assertEqual(job_ids, ["111"])
+        self.assertEqual(still_present, ["111"])
+
+    def test_restart_safety_clear(self):
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "run.log"
+            log_path.write_text("Submitted job 1 with external jobid '111'.\n")
+            exit_path = Path(tmp) / "run.exit"
+            exit_path.write_text("1\n")
+            record = {"exit_path": str(exit_path), "pid": NONEXISTENT_PID, "log_path": str(log_path)}
+            with patch("launch_pipeline.check_jobs_cleared", return_value=[]):
+                status, job_ids, still_present = restart_safety(record)
+        self.assertEqual(status, "failed (exit 1)")
+        self.assertEqual(job_ids, ["111"])
+        self.assertEqual(still_present, [])
 
     def test_ledger_round_trip_and_header_written_once(self):
         with TemporaryDirectory() as tmp:

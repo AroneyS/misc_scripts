@@ -5,9 +5,10 @@ Author: Samuel Aroney
 Wrap an arbitrary long-running command (typically a Snakemake invocation) so
 it runs detached, and record it in a shared TSV ledger: host, PID, cwd,
 command, log, and exit code. `status` reports running/completed/failed across
-every node that launched into the same ledger. `restart` only re-runs a
-tracked command once its previously submitted cluster job IDs (scraped from
-the log) are confirmed gone from qstat, then unlocks and relaunches.
+every node that launched into the same ledger. `check` reports whether a
+tracked run still has cluster jobs queued/running (e.g. after it was
+cancelled or crashed), without touching anything. `restart` does the same
+check and, only once it's clear, unlocks and relaunches the tracked command.
 """
 
 import argparse
@@ -195,6 +196,40 @@ def read_records_from_path(ledger_path):
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
+def restart_safety(record):
+    """Status plus cluster-job-clearance check shared by `check` and `restart`."""
+    status = derive_status(read_exit_code(Path(record["exit_path"])), pid_alive(record["pid"]))
+    job_ids = job_ids_from_log(Path(record["log_path"]).read_text())
+    still_present = check_jobs_cleared(job_ids)
+    return status, job_ids, still_present
+
+
+def cmd_check(args):
+    record = latest_by_name(read_records_from_path(args.ledger)).get(args.name)
+    if record is None:
+        logging.error(f"'{args.name}' not found in ledger")
+        return 1
+
+    status, job_ids, still_present = restart_safety(record)
+    print(f"name:        {record['name']}")
+    print(f"status:      {status}")
+    print(f"host:        {record['host']}")
+    print(f"pid:         {record['pid']}")
+    print(f"log:         {record['log_path']}")
+    print(f"cluster jobs: {len(job_ids)} submitted, {len(still_present)} still queued/running")
+    if still_present:
+        print(f"still active: {', '.join(still_present)}")
+
+    if status == "running":
+        print("verdict: snakemake process itself is still running; not safe to restart")
+        return 1
+    if still_present:
+        print("verdict: cluster jobs still queued/running; wait for them to finish or qdel them before restarting")
+        return 1
+    print("verdict: safe to restart")
+    return 0
+
+
 def cmd_restart(args):
     with locked_ledger(args.ledger) as f:
         record = latest_by_name(read_records(f)).get(args.name)
@@ -202,13 +237,10 @@ def cmd_restart(args):
             logging.error(f"'{args.name}' not found in ledger")
             return 1
 
-        status = derive_status(read_exit_code(Path(record["exit_path"])), pid_alive(record["pid"]))
+        status, job_ids, still_present = restart_safety(record)
         if status == "running":
             logging.error(f"'{args.name}' is still running (pid={record['pid']}, host={record['host']}); not restarting")
             return 1
-
-        job_ids = job_ids_from_log(Path(record["log_path"]).read_text())
-        still_present = check_jobs_cleared(job_ids)
         if still_present:
             logging.error(
                 f"'{args.name}' still has cluster jobs queued/running: {', '.join(still_present)}; "
@@ -246,6 +278,9 @@ def main(arguments):
     status_parser.add_argument("names", nargs="*", help="names to show (default: all tracked)")
     status_parser.add_argument("--check-jobs", action="store_true", help="also query qstat for running runs' cluster job IDs")
 
+    check_parser = subparsers.add_parser("check", help="report whether a tracked run still has cluster jobs queued/running, without restarting it")
+    check_parser.add_argument("name", help="name to check")
+
     restart_parser = subparsers.add_parser("restart", help="restart a tracked run, after confirming its previous cluster jobs are gone")
     restart_parser.add_argument("name", help="name to restart")
 
@@ -263,6 +298,8 @@ def main(arguments):
         return cmd_launch(args)
     elif args.subcommand == "status":
         return cmd_status(args)
+    elif args.subcommand == "check":
+        return cmd_check(args)
     elif args.subcommand == "restart":
         return cmd_restart(args)
 
