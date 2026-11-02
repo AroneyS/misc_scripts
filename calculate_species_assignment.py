@@ -24,7 +24,7 @@ def pipeline(input_folder, output_file):
     condensed_tables = []
     for root, _, files in os.walk(input_folder):
         for file in files:
-            if file.endswith('condensed.csv'):
+            if file.endswith("profile.tsv"):
                 condensed_tables.append(os.path.join(root, file))
 
     logging.info(f"Found {len(condensed_tables)} condensed tables")
