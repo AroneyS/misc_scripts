@@ -175,6 +175,10 @@ def progress_from_log(text):
     return f"{pct}% ({done}/{total})"
 
 
+def format_launched_at(launched_at):
+    return datetime.fromisoformat(launched_at).astimezone().strftime("%m-%d %H:%M")
+
+
 def build_unlock_command(command):
     for i, token in enumerate(command):
         if token == "snakemake" or token.endswith("/snakemake"):
@@ -199,11 +203,12 @@ def start_process(name, command, ledger_path, action, cwd):
     exit_path = log_dir / f"{name}.{timestamp}.exit"
 
     quoted_cmd = " ".join(shlex.quote(part) for part in command)
+    echo_cmd = f"echo {shlex.quote('+ ' + quoted_cmd)}"
     # detached shell wrapper: our own process exits right after Popen, so the
     # exit code has to be captured by something that outlives it
     shell_command = (
         f"cd {shlex.quote(cwd)} && "
-        f"{{ {quoted_cmd} ; }} > {shlex.quote(str(log_path))} 2>&1; "
+        f"{{ {echo_cmd}; {quoted_cmd} ; }} > {shlex.quote(str(log_path))} 2>&1; "
         f"echo $? > {shlex.quote(str(exit_path))}"
     )
     process = subprocess.Popen(
@@ -288,7 +293,7 @@ def cmd_status(args):
             still_present = check_jobs_cleared(job_ids)
             status += f" ({len(still_present)}/{len(job_ids)} cluster jobs active)"
 
-        rows.append([name, status, progress, record["host"], record["pid"], record["launched_at"], record["log_path"]])
+        rows.append([name, status, progress, record["host"], record["pid"], format_launched_at(record["launched_at"]), record["log_path"]])
 
     all_rows = [header] + rows
     widths = [max(len(r[i]) for r in all_rows) for i in range(len(header))]

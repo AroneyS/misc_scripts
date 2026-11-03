@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
+import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch, Mock
@@ -14,12 +16,14 @@ from launch_pipeline import (
     remote_pids_alive,
     is_alive,
     progress_from_log,
+    format_launched_at,
     build_unlock_command,
     latest_by_name,
     locked_ledger,
     read_records,
     write_record,
     restart_safety,
+    start_process,
 )
 
 NONEXISTENT_PID = 999999999
@@ -48,6 +52,21 @@ class Tests(unittest.TestCase):
         # snakemake prints fractional percentages once step counts are large
         text = "Finished jobid: 6531 (Rule: genome_prodigal)\n6 of 6531 steps (0.1%) done\n"
         self.assertEqual(progress_from_log(text), "0.1% (6/6531)")
+
+    def test_format_launched_at(self):
+        self.assertEqual(format_launched_at("2026-11-02T21:48:54.576829+00:00"), datetime.fromisoformat("2026-11-02T21:48:54.576829+00:00").astimezone().strftime("%m-%d %H:%M"))
+
+    def test_start_process_echoes_command_to_log(self):
+        with TemporaryDirectory() as tmp:
+            ledger_path = Path(tmp) / "ledger.tsv"
+            record = start_process("echotest", ["echo", "hi there"], ledger_path, "launch", tmp)
+            for _ in range(50):
+                if Path(record["exit_path"]).exists():
+                    break
+                time.sleep(0.1)
+            log_text = Path(record["log_path"]).read_text()
+        self.assertEqual(log_text.splitlines()[0], "+ echo 'hi there'")
+        self.assertIn("hi there", log_text.splitlines()[1])
 
     def test_pid_alive(self):
         self.assertTrue(pid_alive(1))
@@ -87,7 +106,7 @@ class Tests(unittest.TestCase):
         self.assertIn("otherhost", ssh_cmd)
 
     def test_remote_pids_alive_unreachable(self):
-        mock_result = Mock(returncode=255, stdout="")
+        mock_result = Mock(returncode=255, stdout="", stderr="")
         with patch("launch_pipeline.subprocess.run", return_value=mock_result):
             result = remote_pids_alive("otherhost", ["111"])
         self.assertEqual(result, {"111": None})
