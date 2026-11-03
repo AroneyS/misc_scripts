@@ -94,7 +94,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(describe_state("failed", exit_code=1), "failed (exit 1)")
         self.assertEqual(describe_state("running"), "running")
         self.assertEqual(describe_state("gone"), "unknown (process gone, no exit code recorded)")
-        self.assertIn("could not reach host", describe_state("unreachable"))
+        self.assertEqual(describe_state("unreachable"), "unknown")
 
     def test_remote_pids_alive_parses_output(self):
         mock_result = Mock(returncode=0, stdout="ALIVE:111\n")

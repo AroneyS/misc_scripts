@@ -156,7 +156,7 @@ def describe_state(state, exit_code=None):
         "failed": f"failed (exit {exit_code})",
         "running": "running",
         "gone": "unknown (process gone, no exit code recorded)",
-        "unreachable": "unknown (could not reach host to verify it's not still running)",
+        "unreachable": "unknown",
     }[state]
 
 
