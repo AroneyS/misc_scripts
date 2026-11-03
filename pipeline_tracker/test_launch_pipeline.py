@@ -16,12 +16,14 @@ from launch_pipeline import (
     remote_pids_alive,
     is_alive,
     progress_from_log,
+    read_recent_log,
     rule_errors_from_log,
     format_launched_at,
     build_unlock_command,
     latest_by_name,
     locked_ledger,
     read_records,
+    read_records_from_path,
     write_record,
     restart_safety,
     start_process,
@@ -53,6 +55,14 @@ class Tests(unittest.TestCase):
         # snakemake prints fractional percentages once step counts are large
         text = "Finished jobid: 6531 (Rule: genome_prodigal)\n6 of 6531 steps (0.1%) done\n"
         self.assertEqual(progress_from_log(text), "0.1% (6/6531)")
+
+    def test_read_recent_log_grows_past_a_small_tail(self):
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "run.log"
+            # progress line followed by enough submission chatter to push it out of a 64KB tail
+            log_path.write_text("3 of 6531 steps (0.0%) done\n" + "Submitted job with external jobid 'x'.\n" * 5000)
+            text = read_recent_log(log_path, start_size=64)
+        self.assertEqual(progress_from_log(text), "0.0% (3/6531)")
 
     def test_rule_errors_from_log(self):
         text = "Error in rule failing_rule:\n    jobid: 5\nError in rule another_rule:\n"
@@ -221,6 +231,48 @@ class Tests(unittest.TestCase):
 
         mock_run.assert_called_once_with(["qdel", "111"], capture_output=True, text=True)
         self.assertEqual(rc, 0)
+
+    def test_cmd_forget_removes_only_matching_name(self):
+        with TemporaryDirectory() as tmp:
+            ledger_path = Path(tmp) / "ledger.tsv"
+            for name in ("run1", "run2"):
+                record = {
+                    "name": name, "host": "node1", "pid": str(NONEXISTENT_PID), "cwd": "/tmp",
+                    "command": "snakemake --profile aqua", "log_path": "/tmp/none.log",
+                    "exit_path": "/tmp/none.exit", "launched_at": "2026-01-01T00:00:00+00:00", "action": "launch",
+                }
+                with locked_ledger(ledger_path) as f:
+                    write_record(f, record)
+
+            class Args:
+                name = "run1"
+                ledger = ledger_path
+
+            rc = launch_pipeline.cmd_forget(Args())
+            remaining = latest_by_name(read_records_from_path(ledger_path))
+
+        self.assertEqual(rc, 0)
+        self.assertNotIn("run1", remaining)
+        self.assertIn("run2", remaining)
+
+    def test_cmd_forget_not_found(self):
+        with TemporaryDirectory() as tmp:
+            ledger_path = Path(tmp) / "ledger.tsv"
+            record = {
+                "name": "run1", "host": "node1", "pid": "1", "cwd": "/tmp",
+                "command": "snakemake --profile aqua", "log_path": "/tmp/none.log",
+                "exit_path": "/tmp/none.exit", "launched_at": "2026-01-01T00:00:00+00:00", "action": "launch",
+            }
+            with locked_ledger(ledger_path) as f:
+                write_record(f, record)
+
+            class Args:
+                name = "nosuchname"
+                ledger = ledger_path
+
+            rc = launch_pipeline.cmd_forget(Args())
+
+        self.assertEqual(rc, 1)
 
     def test_ledger_round_trip_and_header_written_once(self):
         with TemporaryDirectory() as tmp:

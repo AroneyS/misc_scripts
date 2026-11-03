@@ -10,7 +10,8 @@ same ledger -- for a run on another host, liveness is checked over SSH, since
 PIDs are only meaningful on the host that owns them. `check` reports whether
 a tracked run still has cluster jobs queued/running (e.g. after it was
 cancelled or crashed), without touching anything. `cancel` qdels any such
-active cluster jobs and stops the local or remote process. `restart` does the
+active cluster jobs and stops the local or remote process. `forget` removes a
+run from the ledger so it stops showing up in `status`. `restart` does the
 same check `cancel` would report and, only once it's clear, unlocks and
 relaunches the tracked command.
 """
@@ -169,6 +170,19 @@ def read_tail(path, size=65536):
         return f.read().decode(errors="replace")
 
 
+def read_recent_log(path, start_size=65536, max_size=8 * 1024 * 1024):
+    """Tail that grows until it finds a progress line, instead of a fixed window --
+    a burst of job-submission lines with no completions yet can push the most recent
+    "N of M steps" line out of a small fixed tail even though it's still in the log."""
+    file_size = path.stat().st_size
+    size = start_size
+    while True:
+        text = read_tail(path, size)
+        if PROGRESS_RE.search(text) or size >= file_size or size >= max_size:
+            return text
+        size *= 4
+
+
 def progress_from_log(text):
     matches = PROGRESS_RE.findall(text)
     if not matches:
@@ -292,7 +306,7 @@ def cmd_status(args):
         progress, errors = "-", "0"
         log_path = Path(record["log_path"])
         if log_path.exists():
-            tail_text = read_tail(log_path)
+            tail_text = read_recent_log(log_path)
             progress = progress_from_log(tail_text) or "-"
             errors = str(rule_errors_from_log(tail_text))
 
@@ -403,6 +417,46 @@ def cmd_cancel(args):
     return 1 if failed else 0
 
 
+def cmd_forget(args):
+    if not args.ledger.exists():
+        logging.error(f"ledger not found: {args.ledger}")
+        return 1
+
+    # the ledger is append-only elsewhere (see locked_ledger/"a+"), but removing a row needs an
+    # in-place rewrite, so this opens its own "r+" handle and takes the flock directly
+    with open(args.ledger, "r+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            records = read_records(f)
+            matching = [r for r in records if r["name"] == args.name]
+            if not matching:
+                logging.error(f"'{args.name}' not found in ledger")
+                return 1
+
+            latest = matching[-1]
+            exit_code = read_exit_code(Path(latest["exit_path"]))
+            alive = None if exit_code is not None else is_alive(latest["host"], latest["pid"])
+            state = run_state(exit_code, alive)
+            if state not in SAFE_TO_ACT_STATES:
+                logging.warning(
+                    f"'{args.name}' is {describe_state(state, exit_code)}; forgetting it anyway, "
+                    "but you'll lose status/restart/cancel tracking for it"
+                )
+
+            remaining = [r for r in records if r["name"] != args.name]
+            f.seek(0)
+            f.truncate()
+            writer = csv.DictWriter(f, fieldnames=LEDGER_FIELDS, delimiter="\t")
+            writer.writeheader()
+            writer.writerows(remaining)
+            f.flush()
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+    logging.info(f"'{args.name}' removed from ledger")
+    return 0
+
+
 def cmd_restart(args):
     with locked_ledger(args.ledger) as f:
         record = latest_by_name(read_records(f)).get(args.name)
@@ -461,6 +515,9 @@ def main(arguments):
     cancel_parser = subparsers.add_parser("cancel", help="qdel all cluster jobs still active for a tracked run, and stop its local process if still running")
     cancel_parser.add_argument("name", help="name to cancel")
 
+    forget_parser = subparsers.add_parser("forget", help="remove a tracked run from the ledger so it no longer appears in status")
+    forget_parser.add_argument("name", help="name to forget")
+
     restart_parser = subparsers.add_parser("restart", help="restart a tracked run, after confirming its previous cluster jobs are gone")
     restart_parser.add_argument("name", help="name to restart")
 
@@ -482,6 +539,8 @@ def main(arguments):
         return cmd_check(args)
     elif args.subcommand == "cancel":
         return cmd_cancel(args)
+    elif args.subcommand == "forget":
+        return cmd_forget(args)
     elif args.subcommand == "restart":
         return cmd_restart(args)
 
