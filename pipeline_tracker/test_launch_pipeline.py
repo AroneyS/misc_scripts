@@ -16,6 +16,7 @@ from launch_pipeline import (
     remote_pids_alive,
     is_alive,
     progress_from_log,
+    rule_errors_from_log,
     format_launched_at,
     build_unlock_command,
     latest_by_name,
@@ -52,6 +53,13 @@ class Tests(unittest.TestCase):
         # snakemake prints fractional percentages once step counts are large
         text = "Finished jobid: 6531 (Rule: genome_prodigal)\n6 of 6531 steps (0.1%) done\n"
         self.assertEqual(progress_from_log(text), "0.1% (6/6531)")
+
+    def test_rule_errors_from_log(self):
+        text = "Error in rule failing_rule:\n    jobid: 5\nError in rule another_rule:\n"
+        self.assertEqual(rule_errors_from_log(text), 2)
+
+    def test_rule_errors_from_log_none(self):
+        self.assertEqual(rule_errors_from_log("3 of 10 steps (30%) done\n"), 0)
 
     def test_format_launched_at(self):
         self.assertEqual(format_launched_at("2026-11-02T21:48:54.576829+00:00"), datetime.fromisoformat("2026-11-02T21:48:54.576829+00:00").astimezone().strftime("%m-%d %H:%M"))

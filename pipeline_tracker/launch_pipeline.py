@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import signal
 import socket
 import subprocess
@@ -32,6 +33,7 @@ from pathlib import Path
 
 JOBID_RE = re.compile(r"external jobid '([^']+)'")
 PROGRESS_RE = re.compile(r"(\d+) of (\d+) steps \(([\d.]+)%\) done")
+ERROR_RE = re.compile(r"Error in rule \S+:")
 LEDGER_FIELDS = ["name", "host", "pid", "cwd", "command", "log_path", "exit_path", "launched_at", "action"]
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=accept-new"]
 # a run is only safe to relaunch/unlock/treat-as-not-running once we're sure it isn't still going;
@@ -175,6 +177,10 @@ def progress_from_log(text):
     return f"{pct}% ({done}/{total})"
 
 
+def rule_errors_from_log(text):
+    return len(ERROR_RE.findall(text))
+
+
 def format_launched_at(launched_at):
     return datetime.fromisoformat(launched_at).astimezone().strftime("%m-%d %H:%M")
 
@@ -270,7 +276,7 @@ def cmd_status(args):
             for pid, alive in remote_pids_alive(host, pids).items():
                 alive_lookup[(host, pid)] = alive
 
-    header = ["NAME", "STATUS", "PROGRESS", "HOST", "PID", "LAUNCHED_AT", "LOG"]
+    header = ["NAME", "STATUS", "PROGRESS", "ERRS", "HOST", "LAUNCHED_AT", "LOG"]
     rows = []
     for name in names:
         record = latest.get(name)
@@ -283,20 +289,36 @@ def cmd_status(args):
         state = run_state(exit_code, alive)
         status = describe_state(state, exit_code)
 
-        progress = "-"
+        progress, errors = "-", "0"
         log_path = Path(record["log_path"])
         if log_path.exists():
-            progress = progress_from_log(read_tail(log_path)) or "-"
+            tail_text = read_tail(log_path)
+            progress = progress_from_log(tail_text) or "-"
+            errors = str(rule_errors_from_log(tail_text))
 
         if args.check_jobs and state == "running":
             job_ids = job_ids_from_log(log_path.read_text())
             still_present = check_jobs_cleared(job_ids)
             status += f" ({len(still_present)}/{len(job_ids)} cluster jobs active)"
 
-        rows.append([name, status, progress, record["host"], record["pid"], format_launched_at(record["launched_at"]), record["log_path"]])
+        rows.append([name, status, progress, errors, record["host"], format_launched_at(record["launched_at"]), record["log_path"]])
 
     all_rows = [header] + rows
+    log_col = len(header) - 1
     widths = [max(len(r[i]) for r in all_rows) for i in range(len(header))]
+
+    # LOG is last and lowest-priority, so it's the one that gets truncated (with an
+    # ellipsis) to fit the terminal -- but only when actually too narrow, and never
+    # when piped (e.g. to a file), so the full path stays copy/paste-able otherwise
+    if sys.stdout.isatty():
+        term_width = shutil.get_terminal_size().columns
+        available = term_width - sum(widths[:log_col]) - 2 * log_col
+        if 10 <= available < widths[log_col]:
+            widths[log_col] = available
+            for row in all_rows[1:]:
+                if len(row[log_col]) > available:
+                    row[log_col] = row[log_col][: available - 1] + "…"
+
     for row in all_rows:
         print("  ".join(c.ljust(w) for c, w in zip(row, widths)))
     return 0
