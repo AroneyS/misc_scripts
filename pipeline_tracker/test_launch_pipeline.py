@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import subprocess
+import sys
 import time
 import unittest
 from datetime import datetime
@@ -27,6 +29,10 @@ from launch_pipeline import (
     write_record,
     restart_safety,
     start_process,
+    gather_rows,
+    render_status_table,
+    STATUS_HEADER,
+    _row_attr,
 )
 
 NONEXISTENT_PID = 999999999
@@ -290,6 +296,89 @@ class Tests(unittest.TestCase):
             self.assertEqual(ledger_path.read_text().splitlines()[0].split("\t"), [
                 "name", "host", "pid", "cwd", "command", "log_path", "exit_path", "launched_at", "action",
             ])
+
+
+    def test_gather_rows_not_in_ledger(self):
+        rows = gather_rows({}, ["nosuchname"])
+        self.assertEqual(rows, [{
+            "name": "nosuchname", "record": None, "state": None, "exit_code": None,
+            "status": "unknown (not in ledger)", "progress": "-", "errors": "-",
+            "host": "-", "launched_at": "-", "log_path": "-",
+        }])
+
+    def test_gather_rows_completed(self):
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "run.log"
+            log_path.write_text("3 of 10 steps (30%) done\n")
+            exit_path = Path(tmp) / "run.exit"
+            exit_path.write_text("0\n")
+            record = {
+                "name": "run1", "host": "node1", "pid": "123", "cwd": "/tmp",
+                "command": "snakemake --profile aqua", "log_path": str(log_path),
+                "exit_path": str(exit_path), "launched_at": "2026-01-01T00:00:00+00:00", "action": "launch",
+            }
+            rows = gather_rows({"run1": record}, ["run1"])
+        self.assertEqual(rows[0]["name"], "run1")
+        self.assertEqual(rows[0]["state"], "completed")
+        self.assertEqual(rows[0]["exit_code"], 0)
+        self.assertEqual(rows[0]["status"], "completed")
+        self.assertEqual(rows[0]["progress"], "30% (3/10)")
+        self.assertEqual(rows[0]["errors"], "0")
+        self.assertIs(rows[0]["record"], record)
+
+    def test_gather_rows_check_jobs_appends_cluster_job_count(self):
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "run.log"
+            log_path.write_text("Submitted job 1 with external jobid '111'.\n")
+            record = {
+                "name": "run1", "host": "thishost", "pid": str(NONEXISTENT_PID), "cwd": "/tmp",
+                "command": "snakemake --profile aqua", "log_path": str(log_path),
+                "exit_path": str(Path(tmp) / "run.exit"), "launched_at": "2026-01-01T00:00:00+00:00", "action": "launch",
+            }
+            with patch("launch_pipeline.socket.gethostname", return_value="thishost"), \
+                 patch("launch_pipeline.pid_alive", return_value=True), \
+                 patch("launch_pipeline.check_jobs_cleared", return_value=["111"]):
+                rows = gather_rows({"run1": record}, ["run1"], check_jobs=True)
+        self.assertEqual(rows[0]["state"], "running")
+        self.assertEqual(rows[0]["status"], "running (1/1 cluster jobs active)")
+
+    def test_render_status_table_header(self):
+        lines = render_status_table([])
+        self.assertEqual(lines, ["  ".join(STATUS_HEADER)])
+
+    def test_render_status_table_truncates_log_when_narrow(self):
+        rows = [{
+            "name": "run1", "status": "running", "progress": "-", "errors": "0",
+            "host": "node1", "launched_at": "01-01 00:00", "log_path": "/" + "a" * 300 + "/run1.log",
+        }]
+        lines = render_status_table(rows, term_width=80)
+        log_field = lines[1].split("  ")[-1]
+        self.assertTrue(log_field.endswith("…"))
+        self.assertLess(len(log_field), len(rows[0]["log_path"]))
+
+    def test_render_status_table_no_truncation_when_term_width_none(self):
+        rows = [{
+            "name": "run1", "status": "running", "progress": "-", "errors": "0",
+            "host": "node1", "launched_at": "01-01 00:00", "log_path": "/a/very/long/path/to/a/run1.log",
+        }]
+        lines = render_status_table(rows, term_width=None)
+        self.assertIn(rows[0]["log_path"], lines[1])
+
+    def test_row_attr(self):
+        # curses.color_pair() needs an initscr'd terminal, so stub it rather
+        # than actually initialising curses just for this mapping check
+        with patch("launch_pipeline.curses.color_pair", side_effect=lambda n: n):
+            self.assertEqual(_row_attr({"state": "completed"}), 1)
+            self.assertEqual(_row_attr({"state": "failed"}), 2)
+            self.assertEqual(_row_attr({"state": "gone"}), 3)
+            self.assertEqual(_row_attr({"state": "unreachable"}), 3)
+        self.assertEqual(_row_attr({"state": "running"}), 0)
+
+    def test_watch_subcommand_help(self):
+        script = Path(__file__).resolve().parent / "launch_pipeline.py"
+        result = subprocess.run([sys.executable, str(script), "watch", "--help"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("--interval", result.stdout)
 
 
 if __name__ == "__main__":

@@ -13,11 +13,14 @@ cancelled or crashed), without touching anything. `cancel` qdels any such
 active cluster jobs and stops the local or remote process. `forget` removes a
 run from the ledger so it stops showing up in `status`. `restart` does the
 same check `cancel` would report and, only once it's clear, unlocks and
-relaunches the tracked command.
+relaunches the tracked command. `watch` is an interactive, auto-refreshing
+version of `status`, with keys to view/tail a run's log and to check/cancel/
+forget/restart it.
 """
 
 import argparse
 import csv
+import curses
 import fcntl
 import logging
 import os
@@ -28,6 +31,8 @@ import signal
 import socket
 import subprocess
 import sys
+import textwrap
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -269,9 +274,14 @@ def cmd_launch(args):
     return 0
 
 
-def cmd_status(args):
-    latest = latest_by_name(read_records_from_path(args.ledger))
-    names = args.names or sorted(latest.keys())
+STATUS_HEADER = ["NAME", "STATUS", "PROGRESS", "ERRS", "HOST", "LAUNCHED_AT", "LOG"]
+
+
+def gather_rows(latest, names, check_jobs=False, no_remote_check=False):
+    """Compute one status row per name, from the ledger's latest records.
+
+    Shared by `status` (plain table) and `watch` (curses table, plus the raw
+    `record` dict each row carries so key presses can act on it)."""
     current_host = socket.gethostname()
 
     # batch the liveness checks one SSH round trip per remote host, not one per run
@@ -286,16 +296,19 @@ def cmd_status(args):
         if host == current_host:
             for pid in pids:
                 alive_lookup[(host, pid)] = pid_alive(pid)
-        elif not args.no_remote_check:
+        elif not no_remote_check:
             for pid, alive in remote_pids_alive(host, pids).items():
                 alive_lookup[(host, pid)] = alive
 
-    header = ["NAME", "STATUS", "PROGRESS", "ERRS", "HOST", "LAUNCHED_AT", "LOG"]
     rows = []
     for name in names:
         record = latest.get(name)
         if record is None:
-            rows.append([name, "unknown (not in ledger)", "-", "-", "-", "-", "-"])
+            rows.append({
+                "name": name, "record": None, "state": None, "exit_code": None,
+                "status": "unknown (not in ledger)", "progress": "-", "errors": "-",
+                "host": "-", "launched_at": "-", "log_path": "-",
+            })
             continue
 
         exit_code = read_exit_code(Path(record["exit_path"]))
@@ -310,22 +323,36 @@ def cmd_status(args):
             progress = progress_from_log(tail_text) or "-"
             errors = str(rule_errors_from_log(tail_text))
 
-        if args.check_jobs and state == "running":
+        if check_jobs and state == "running":
             job_ids = job_ids_from_log(log_path.read_text())
             still_present = check_jobs_cleared(job_ids)
             status += f" ({len(still_present)}/{len(job_ids)} cluster jobs active)"
 
-        rows.append([name, status, progress, errors, record["host"], format_launched_at(record["launched_at"]), record["log_path"]])
+        rows.append({
+            "name": name, "record": record, "state": state, "exit_code": exit_code,
+            "status": status, "progress": progress, "errors": errors,
+            "host": record["host"], "launched_at": format_launched_at(record["launched_at"]),
+            "log_path": record["log_path"],
+        })
+    return rows
 
-    all_rows = [header] + rows
-    log_col = len(header) - 1
-    widths = [max(len(r[i]) for r in all_rows) for i in range(len(header))]
 
-    # LOG is last and lowest-priority, so it's the one that gets truncated (with an
-    # ellipsis) to fit the terminal -- but only when actually too narrow, and never
-    # when piped (e.g. to a file), so the full path stays copy/paste-able otherwise
-    if sys.stdout.isatty():
-        term_width = shutil.get_terminal_size().columns
+def render_status_table(rows, term_width=None):
+    """Format `gather_rows()` output into aligned header+row strings.
+
+    LOG is last and lowest-priority, so it's the one that gets truncated
+    (with an ellipsis) to fit `term_width` -- but only when actually too
+    narrow. Pass `term_width=None` (e.g. output is piped) to never truncate,
+    so the full path stays copy/paste-able."""
+    table_rows = [
+        [r["name"], r["status"], r["progress"], r["errors"], r["host"], r["launched_at"], r["log_path"]]
+        for r in rows
+    ]
+    all_rows = [STATUS_HEADER] + table_rows
+    log_col = len(STATUS_HEADER) - 1
+    widths = [max(len(r[i]) for r in all_rows) for i in range(len(STATUS_HEADER))]
+
+    if term_width is not None:
         available = term_width - sum(widths[:log_col]) - 2 * log_col
         if 10 <= available < widths[log_col]:
             widths[log_col] = available
@@ -333,8 +360,16 @@ def cmd_status(args):
                 if len(row[log_col]) > available:
                     row[log_col] = row[log_col][: available - 1] + "…"
 
-    for row in all_rows:
-        print("  ".join(c.ljust(w) for c, w in zip(row, widths)))
+    return ["  ".join(c.ljust(w) for c, w in zip(row, widths)) for row in all_rows]
+
+
+def cmd_status(args):
+    latest = latest_by_name(read_records_from_path(args.ledger))
+    names = args.names or sorted(latest.keys())
+    rows = gather_rows(latest, names, check_jobs=args.check_jobs, no_remote_check=args.no_remote_check)
+    term_width = shutil.get_terminal_size().columns if sys.stdout.isatty() else None
+    for line in render_status_table(rows, term_width):
+        print(line)
     return 0
 
 
@@ -492,6 +527,263 @@ def cmd_restart(args):
     return 0
 
 
+DEFAULT_WATCH_INTERVAL = 15.0
+
+WATCH_HELP_TEXT = textwrap.dedent(
+    """
+    watch key bindings:
+      q           quit
+      h           show this help
+      up/down     move selection
+      PgUp/PgDn   page
+      Home        jump to top
+      /           search by name
+      r           refresh now (otherwise auto-refreshes every %(interval)gs)
+      o / l       view full log in less
+      t           tail -f the log (Ctrl-C to stop)
+      c           check cluster-job status (read-only)
+      k           cancel: qdel active cluster jobs, stop the process
+      f           forget: remove from the ledger (loses status/restart/cancel tracking)
+      R           restart: unlock + relaunch, only once previous jobs are confirmed clear
+
+    Row colours:
+      green:  completed (exit 0)
+      red:    failed (non-zero exit)
+      yellow: gone/unreachable (process missing with no exit code, or host unreachable)
+    """
+) % {"interval": DEFAULT_WATCH_INTERVAL}
+WATCH_HELP_LINES = WATCH_HELP_TEXT.splitlines()
+
+
+def _row_attr(row):
+    state = row.get("state")
+    if state == "completed":
+        return curses.color_pair(1)
+    if state == "failed":
+        return curses.color_pair(2)
+    if state in ("gone", "unreachable"):
+        return curses.color_pair(3)
+    return 0
+
+
+def _addstr_safe(stdscr, y, x, text, maxx, attr=0):
+    text = text[: max(0, maxx - x - 1)]
+    if text:
+        try:
+            stdscr.addstr(y, x, text, attr)
+        except curses.error:
+            pass
+
+
+def _show_watch_help(stdscr):
+    stdscr.nodelay(False)
+    top = 0
+    while True:
+        maxy, maxx = stdscr.getmaxyx()
+        stdscr.erase()
+        for idx, line in enumerate(WATCH_HELP_LINES[top : top + maxy - 1]):
+            _addstr_safe(stdscr, idx, 0, line, maxx)
+        _addstr_safe(stdscr, maxy - 1, 0, "q to exit help", maxx, curses.A_REVERSE)
+        stdscr.refresh()
+        key = stdscr.getch()
+        if key in (ord("q"), ord("h")):
+            break
+        elif key == curses.KEY_DOWN:
+            top = min(max(0, len(WATCH_HELP_LINES) - (maxy - 1)), top + 1)
+        elif key == curses.KEY_UP:
+            top = max(0, top - 1)
+    stdscr.nodelay(True)
+    stdscr.clear()
+    curses.curs_set(0)
+
+
+def cmd_watch(args):
+    names_filter = args.names
+    ledger = args.ledger
+
+    def fetch_rows():
+        latest = latest_by_name(read_records_from_path(ledger))
+        names = names_filter or sorted(latest.keys())
+        return gather_rows(latest, names, no_remote_check=args.no_remote_check)
+
+    def _draw(stdscr):
+        curses.curs_set(0)
+        curses.start_color()
+        curses.use_default_colors()
+        curses.init_pair(1, curses.COLOR_GREEN, -1)
+        curses.init_pair(2, curses.COLOR_RED, -1)
+        curses.init_pair(3, curses.COLOR_YELLOW, -1)
+        stdscr.nodelay(True)
+        stdscr.keypad(True)
+
+        rows, lines = [], []
+        selected = 1
+        offset = 0
+        last_refresh = 0.0
+        message, message_until = None, 0.0
+
+        def refresh():
+            nonlocal rows, lines, last_refresh
+            rows = fetch_rows()
+            _, maxx = stdscr.getmaxyx()
+            lines = render_status_table(rows, term_width=maxx)
+            last_refresh = time.time()
+
+        def flash(text, seconds=2.5):
+            nonlocal message, message_until
+            message, message_until = text, time.time() + seconds
+
+        def confirm(prompt):
+            maxy, maxx = stdscr.getmaxyx()
+            stdscr.move(maxy - 1, 0)
+            stdscr.clrtoeol()
+            _addstr_safe(stdscr, maxy - 1, 0, prompt + " [y/N] ", maxx, curses.A_REVERSE)
+            stdscr.refresh()
+            stdscr.nodelay(False)
+            key = stdscr.getch()
+            stdscr.nodelay(True)
+            return key in (ord("y"), ord("Y"))
+
+        def run_action(action_fn):
+            """Leave curses so the action's normal logging/printing is
+            visible, let the user read it, then resume the table."""
+            curses.endwin()
+            try:
+                action_fn()
+            finally:
+                input("\nPress Enter to return...")
+                stdscr.clear()
+                curses.curs_set(0)
+            refresh()
+
+        refresh()
+
+        while True:
+            maxy, maxx = stdscr.getmaxyx()
+            key = stdscr.getch()
+
+            if message and time.time() > message_until:
+                message = None
+
+            selected_row = rows[selected - 1] if rows and 0 < selected <= len(rows) else None
+
+            if key == -1:
+                if time.time() - last_refresh >= args.interval:
+                    refresh()
+                time.sleep(0.1)
+            elif key == ord("q"):
+                break
+            elif key == curses.KEY_UP:
+                selected = max(1, selected - 1)
+            elif key == curses.KEY_DOWN:
+                selected = min(len(lines) - 1, selected + 1) if lines else 1
+            elif key == curses.KEY_NPAGE:
+                if lines:
+                    selected = min(len(lines) - 1, selected + (maxy - 2))
+            elif key == curses.KEY_PPAGE:
+                selected = max(1, selected - (maxy - 2))
+            elif key == curses.KEY_HOME:
+                selected, offset = 1, 0
+            elif key == ord("r"):
+                refresh()
+            elif key == ord("h"):
+                _show_watch_help(stdscr)
+            elif key == ord("/"):
+                curses.echo()
+                stdscr.nodelay(False)
+                stdscr.move(maxy - 1, 0)
+                stdscr.clrtoeol()
+                stdscr.addstr(maxy - 1, 0, "/")
+                try:
+                    query = stdscr.getstr(maxy - 1, 1).decode()
+                except Exception:
+                    query = ""
+                stdscr.nodelay(True)
+                curses.noecho()
+                if query:
+                    ql = query.lower()
+                    for idx, row in enumerate(rows, start=1):
+                        if ql in row["name"].lower():
+                            selected = idx
+                            break
+            elif key in (ord("o"), ord("l")):
+                if selected_row is None:
+                    flash("no run selected")
+                elif selected_row["log_path"] != "-" and os.path.exists(selected_row["log_path"]):
+                    curses.endwin()
+                    subprocess.call(["less", selected_row["log_path"]])
+                    stdscr.clear()
+                    curses.curs_set(0)
+                else:
+                    flash(f"no log for '{selected_row['name']}'")
+            elif key == ord("t"):
+                if selected_row is None:
+                    flash("no run selected")
+                elif selected_row["log_path"] != "-" and os.path.exists(selected_row["log_path"]):
+                    curses.endwin()
+                    try:
+                        subprocess.call(["tail", "-f", selected_row["log_path"]])
+                    except KeyboardInterrupt:
+                        pass
+                    stdscr.clear()
+                    curses.curs_set(0)
+                else:
+                    flash(f"no log for '{selected_row['name']}'")
+            elif key == ord("c"):
+                if selected_row is None or selected_row["record"] is None:
+                    flash("no run selected")
+                else:
+                    name = selected_row["name"]
+                    run_action(lambda: cmd_check(argparse.Namespace(name=name, ledger=ledger)))
+            elif key == ord("k"):
+                if selected_row is None or selected_row["record"] is None:
+                    flash("no run selected")
+                elif confirm(f"cancel '{selected_row['name']}'? qdels its cluster jobs and stops its process"):
+                    name = selected_row["name"]
+                    run_action(lambda: cmd_cancel(argparse.Namespace(name=name, ledger=ledger)))
+            elif key == ord("f"):
+                if selected_row is None or selected_row["record"] is None:
+                    flash("no run selected")
+                elif confirm(f"forget '{selected_row['name']}'? removes it from status/restart/cancel tracking"):
+                    name = selected_row["name"]
+                    run_action(lambda: cmd_forget(argparse.Namespace(name=name, ledger=ledger)))
+            elif key == ord("R"):
+                if selected_row is None or selected_row["record"] is None:
+                    flash("no run selected")
+                elif confirm(f"restart '{selected_row['name']}'? only runs if its previous jobs are confirmed clear"):
+                    name = selected_row["name"]
+                    run_action(lambda: cmd_restart(argparse.Namespace(name=name, ledger=ledger)))
+            elif key not in (-1, curses.KEY_RESIZE):
+                flash(f"unknown key '{chr(key)}'" if 32 <= key <= 126 else "unknown key")
+
+            stdscr.erase()
+            if lines:
+                max_sel = len(lines) - 1
+                selected = min(max(1, selected), max_sel)
+                page = maxy - 2
+                offset = max(0, min(offset, max(0, max_sel - page)))
+                if selected < offset + 1:
+                    offset = selected - 1
+                elif selected > offset + page:
+                    offset = selected - page
+                _addstr_safe(stdscr, 0, 0, lines[0], maxx, curses.A_BOLD)
+                visible = lines[1 + offset : 1 + offset + page]
+                for i, line in enumerate(visible, start=1):
+                    row_idx = offset + i - 1
+                    attr = curses.A_REVERSE if (offset + i == selected) else _row_attr(rows[row_idx])
+                    _addstr_safe(stdscr, i, 0, line, maxx, attr)
+            else:
+                offset, selected = 0, 1
+            if message:
+                _addstr_safe(stdscr, maxy - 2, 0, message, maxx, curses.color_pair(2))
+            help_text = "q quit  h help  /  search  o log  t tail  c check  k cancel  f forget  R restart  r refresh"
+            _addstr_safe(stdscr, maxy - 1, 0, help_text, maxx, curses.A_REVERSE)
+            stdscr.refresh()
+
+    curses.wrapper(_draw)
+    return 0
+
+
 def main(arguments):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--debug", help="output debug information", action="store_true")
@@ -521,6 +813,11 @@ def main(arguments):
     restart_parser = subparsers.add_parser("restart", help="restart a tracked run, after confirming its previous cluster jobs are gone")
     restart_parser.add_argument("name", help="name to restart")
 
+    watch_parser = subparsers.add_parser("watch", help="interactively view tracked runs, auto-refreshing, with keys to view/tail a log and check/cancel/forget/restart a run")
+    watch_parser.add_argument("names", nargs="*", help="names to show (default: all tracked)")
+    watch_parser.add_argument("--no-remote-check", action="store_true", help="skip SSH liveness checks for runs on other hosts (faster; they show as unreachable)")
+    watch_parser.add_argument("--interval", type=float, default=DEFAULT_WATCH_INTERVAL, help="auto-refresh interval in seconds (default: %(default)s)")
+
     args = parser.parse_args(arguments)
 
     if args.debug:
@@ -543,6 +840,8 @@ def main(arguments):
         return cmd_forget(args)
     elif args.subcommand == "restart":
         return cmd_restart(args)
+    elif args.subcommand == "watch":
+        return cmd_watch(args)
 
 
 if __name__ == "__main__":
