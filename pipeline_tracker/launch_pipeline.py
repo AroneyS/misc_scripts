@@ -616,7 +616,14 @@ def cmd_watch(args):
     def fetch_rows():
         latest = latest_by_name(read_records_from_path(ledger))
         names = names_filter or sorted(latest.keys())
-        return gather_rows(latest, names, no_remote_check=args.no_remote_check)
+        # Warnings (e.g. ssh timeouts) would be written over the curses screen on
+        # every refresh; unreachable hosts already show as such in the table.
+        previous = logging.root.manager.disable
+        logging.disable(logging.WARNING)
+        try:
+            return gather_rows(latest, names, no_remote_check=args.no_remote_check)
+        finally:
+            logging.disable(previous)
 
     def _draw(stdscr):
         curses.curs_set(0)
