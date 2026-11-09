@@ -274,7 +274,19 @@ def cmd_launch(args):
     return 0
 
 
-STATUS_HEADER = ["NAME", "STATUS", "PROGRESS", "ERRS", "HOST", "LAUNCHED_AT", "LOG"]
+STATUS_HEADER = ["NAME", "PROJECT", "STATUS", "PROGRESS", "ERRS", "HOST", "LAUNCHED_AT", "LOG"]
+
+
+def project_from_cwd(cwd):
+    """Short project label for a run's working directory.
+
+    ~/projects/<project>/... -> <project>; any other path -> its basename."""
+    parts = Path(cwd).parts
+    if "projects" in parts:
+        idx = parts.index("projects")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+    return Path(cwd).name or "-"
 
 
 def gather_rows(latest, names, check_jobs=False, no_remote_check=False):
@@ -307,7 +319,7 @@ def gather_rows(latest, names, check_jobs=False, no_remote_check=False):
             rows.append({
                 "name": name, "record": None, "state": None, "exit_code": None,
                 "status": "unknown (not in ledger)", "progress": "-", "errors": "-",
-                "host": "-", "launched_at": "-", "log_path": "-",
+                "host": "-", "launched_at": "-", "log_path": "-", "project": "-",
             })
             continue
 
@@ -332,7 +344,7 @@ def gather_rows(latest, names, check_jobs=False, no_remote_check=False):
             "name": name, "record": record, "state": state, "exit_code": exit_code,
             "status": status, "progress": progress, "errors": errors,
             "host": record["host"], "launched_at": format_launched_at(record["launched_at"]),
-            "log_path": record["log_path"],
+            "log_path": record["log_path"], "project": project_from_cwd(record["cwd"]),
         })
     return rows
 
@@ -345,7 +357,7 @@ def render_status_table(rows, term_width=None):
     narrow. Pass `term_width=None` (e.g. output is piped) to never truncate,
     so the full path stays copy/paste-able."""
     table_rows = [
-        [r["name"], r["status"], r["progress"], r["errors"], r["host"], r["launched_at"], r["log_path"]]
+        [r["name"], r["project"], r["status"], r["progress"], r["errors"], r["host"], r["launched_at"], r["log_path"]]
         for r in rows
     ]
     all_rows = [STATUS_HEADER] + table_rows

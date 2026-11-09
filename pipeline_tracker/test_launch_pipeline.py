@@ -32,6 +32,7 @@ from launch_pipeline import (
     gather_rows,
     render_status_table,
     STATUS_HEADER,
+    project_from_cwd,
     _row_attr,
 )
 
@@ -302,7 +303,7 @@ class Tests(unittest.TestCase):
         rows = gather_rows({}, ["nosuchname"])
         self.assertEqual(rows, [{
             "name": "nosuchname", "record": None, "state": None, "exit_code": None,
-            "status": "unknown (not in ledger)", "progress": "-", "errors": "-",
+            "project": "-", "status": "unknown (not in ledger)", "progress": "-", "errors": "-",
             "host": "-", "launched_at": "-", "log_path": "-",
         }])
 
@@ -348,7 +349,7 @@ class Tests(unittest.TestCase):
 
     def test_render_status_table_truncates_log_when_narrow(self):
         rows = [{
-            "name": "run1", "status": "running", "progress": "-", "errors": "0",
+            "name": "run1", "project": "proj", "status": "running", "progress": "-", "errors": "0",
             "host": "node1", "launched_at": "01-01 00:00", "log_path": "/" + "a" * 300 + "/run1.log",
         }]
         lines = render_status_table(rows, term_width=80)
@@ -358,7 +359,7 @@ class Tests(unittest.TestCase):
 
     def test_render_status_table_no_truncation_when_term_width_none(self):
         rows = [{
-            "name": "run1", "status": "running", "progress": "-", "errors": "0",
+            "name": "run1", "project": "proj", "status": "running", "progress": "-", "errors": "0",
             "host": "node1", "launched_at": "01-01 00:00", "log_path": "/a/very/long/path/to/a/run1.log",
         }]
         lines = render_status_table(rows, term_width=None)
@@ -380,6 +381,14 @@ class Tests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("--interval", result.stdout)
 
+
+
+class ProjectFromCwdTests(unittest.TestCase):
+    def test_projects_subdir(self):
+        self.assertEqual(project_from_cwd("/home/u/projects/foo/results/x"), "foo")
+
+    def test_other_path_uses_basename(self):
+        self.assertEqual(project_from_cwd("/tmp/bar"), "bar")
 
 if __name__ == "__main__":
     unittest.main()
